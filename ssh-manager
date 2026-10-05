@@ -1,0 +1,213 @@
+#!/bin/bash
+
+CONFIG_DIR="$HOME/.ssh/config.d"
+CONFIG_FILE="$HOME/.ssh/config"
+
+mkdir -p "$CONFIG_DIR"
+chmod 700 "$HOME/.ssh" "$CONFIG_DIR"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    touch "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
+fi
+
+if ! grep -qF 'Include ~/.ssh/config.d/*.conf' "$CONFIG_FILE"; then
+    {
+        echo ""
+        echo "# Conexiones administradas por ssh-manager"
+        echo "Include ~/.ssh/config.d/*.conf"
+    } >> "$CONFIG_FILE"
+fi
+
+registrar() {
+    echo
+    echo "=== Registrar conexión SSH ==="
+    echo
+
+    read -rp "Nombre/alias: " NAME
+
+    if [ -z "$NAME" ]; then
+        echo "Error: el nombre no puede estar vacío."
+        return
+    fi
+
+    if [[ ! "$NAME" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        echo "Error: usá solamente letras, números, punto, guión o guión bajo."
+        return
+    fi
+
+    FILE="$CONFIG_DIR/$NAME.conf"
+
+    if [ -f "$FILE" ]; then
+        echo "Ya existe una conexión llamada '$NAME'."
+        return
+    fi
+
+    read -rp "Usuario: " USER
+    read -rp "IP / dominio: " HOST
+    read -rp "Puerto [22]: " PORT
+
+    PORT=${PORT:-22}
+
+    echo
+    echo "Clave privada SSH"
+    echo "Dejá vacío para usar ~/.ssh/id_ed25519"
+    read -rp "Ruta: " KEY
+
+    KEY=${KEY:-$HOME/.ssh/id_ed25519}
+    KEY="${KEY/#\~/$HOME}"
+
+    if [ ! -f "$KEY" ]; then
+        echo
+        echo "Advertencia: no existe la clave:"
+        echo "$KEY"
+        read -rp "¿Crear igualmente la conexión? [s/N]: " CONT
+        [[ ! "$CONT" =~ ^[sS]$ ]] && return
+    fi
+
+    cat > "$FILE" <<EOC
+Host $NAME
+    HostName $HOST
+    User $USER
+    Port $PORT
+    IdentityFile $KEY
+    IdentitiesOnly yes
+EOC
+
+    chmod 600 "$FILE"
+
+    echo
+    echo "================================"
+    echo "Script creado correctamente!"
+    echo
+    echo "Conexión: $NAME"
+    echo "Destino:  $USER@$HOST:$PORT"
+    echo "Clave:    $KEY"
+    echo
+    echo "Para conectarte:"
+    echo "  ssh $NAME"
+    echo "================================"
+}
+
+listar() {
+    echo
+    echo "=== Conexiones SSH ==="
+    echo
+
+    found=0
+
+    for FILE in "$CONFIG_DIR"/*.conf; do
+        [ -e "$FILE" ] || continue
+
+        NAME=$(basename "$FILE" .conf)
+        HOST=$(grep -E '^[[:space:]]*HostName ' "$FILE" | awk '{print $2}')
+        USER=$(grep -E '^[[:space:]]*User ' "$FILE" | awk '{print $2}')
+        PORT=$(grep -E '^[[:space:]]*Port ' "$FILE" | awk '{print $2}')
+
+        printf "  %-20s %s@%s:%s\n" "$NAME" "$USER" "$HOST" "$PORT"
+        found=1
+    done
+
+    if [ "$found" -eq 0 ]; then
+        echo "No hay conexiones registradas."
+    fi
+
+    echo
+}
+
+modificar() {
+    echo
+    listar
+
+    read -rp "Nombre de la conexión a modificar: " NAME
+    FILE="$CONFIG_DIR/$NAME.conf"
+
+    if [ ! -f "$FILE" ]; then
+        echo "No existe '$NAME'."
+        return
+    fi
+
+    OLD_USER=$(grep -E '^[[:space:]]*User ' "$FILE" | awk '{print $2}')
+    OLD_HOST=$(grep -E '^[[:space:]]*HostName ' "$FILE" | awk '{print $2}')
+    OLD_PORT=$(grep -E '^[[:space:]]*Port ' "$FILE" | awk '{print $2}')
+    OLD_KEY=$(grep -E '^[[:space:]]*IdentityFile ' "$FILE" | awk '{print $2}')
+
+    echo
+    echo "Enter = mantener valor actual"
+    echo
+
+    read -rp "Usuario [$OLD_USER]: " USER
+    read -rp "IP / dominio [$OLD_HOST]: " HOST
+    read -rp "Puerto [$OLD_PORT]: " PORT
+    read -rp "Clave privada [$OLD_KEY]: " KEY
+
+    USER=${USER:-$OLD_USER}
+    HOST=${HOST:-$OLD_HOST}
+    PORT=${PORT:-$OLD_PORT}
+    KEY=${KEY:-$OLD_KEY}
+
+    cat > "$FILE" <<EOC
+Host $NAME
+    HostName $HOST
+    User $USER
+    Port $PORT
+    IdentityFile $KEY
+    IdentitiesOnly yes
+EOC
+
+    chmod 600 "$FILE"
+
+    echo
+    echo "Conexión '$NAME' modificada correctamente."
+}
+
+eliminar() {
+    echo
+    listar
+
+    read -rp "Nombre de la conexión a eliminar: " NAME
+    FILE="$CONFIG_DIR/$NAME.conf"
+
+    if [ ! -f "$FILE" ]; then
+        echo "No existe '$NAME'."
+        return
+    fi
+
+    read -rp "¿Eliminar '$NAME'? [s/N]: " CONFIRM
+
+    if [[ "$CONFIRM" =~ ^[sS]$ ]]; then
+        rm -f "$FILE"
+        echo "Conexión '$NAME' eliminada."
+    else
+        echo "Cancelado."
+    fi
+}
+
+while true; do
+    clear
+
+    echo "================================"
+    echo "       SSH CONNECTION MANAGER"
+    echo "================================"
+    echo
+    echo "1) Registrar conexión"
+    echo "2) Ver conexiones"
+    echo "3) Modificar conexión"
+    echo "4) Eliminar conexión"
+    echo "5) Salir"
+    echo
+
+    read -rp "Opción: " OPTION
+
+    case "$OPTION" in
+        1) registrar ;;
+        2) listar ;;
+        3) modificar ;;
+        4) eliminar ;;
+        5) exit 0 ;;
+        *) echo "Opción inválida." ;;
+    esac
+
+    echo
+    read -rp "Presioná Enter para continuar..."
+done
