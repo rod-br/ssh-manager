@@ -17,6 +17,7 @@
 ![OpenSSH](https://img.shields.io/badge/OpenSSH-nativo-blue)
 ![Dependencias](https://img.shields.io/badge/dependencias-0-success)
 ![Plataforma](https://img.shields.io/badge/Linux%20%7C%20macOS-lightgrey)
+![Licencia](https://img.shields.io/badge/licencia-MIT-yellow)
 
 </div>
 
@@ -181,3 +182,7 @@ eliminá `~/.ssh/config.d/` y la línea `Include` de `~/.ssh/config`.
 
 Corre el flujo completo (registrar, renombrar, modificar, eliminar, validaciones)
 contra un `HOME` temporal, sin tocar tu `~/.ssh` real.
+
+## Licencia
+
+[MIT](LICENSE)
