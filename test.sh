@@ -32,7 +32,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$H/.ssh/con espacio"
 run 2 web root 10.0.0.1 "" "" n ""
 [ "$(opt web hostname)" = 10.0.0.1 ] || fail "registrar: hostname"
 [ "$(opt web port)" = 22 ] || fail "registrar: puerto por defecto"
-[ "$(opt web identityfile)" = "$H/.ssh/con espacio" ] || fail "registrar: ruta de clave con espacios"
+[ "$(opt web identityfile)" = "~/.ssh/con espacio" ] || fail "registrar: clave con espacios, guardada como ~/"
 [ "$(stat -c %a "$D/web.conf" 2>/dev/null || stat -f %Lp "$D/web.conf")" = 600 ] || fail "permisos"
 
 # Entradas inválidas no escriben nada.
@@ -57,5 +57,16 @@ run 2 otra root h "" "" n "" 5 otra prod ""
 
 run 6 prod s ""
 [ ! -e "$D/prod.conf" ] || fail "eliminar"
+
+# Migrar: el comando de backup que muestra la guía funciona y la restauración también.
+run 8 ""
+(cd "$H" && HOME="$H" eval "$(grep -m1 'tar czf' "$H/out")") || fail "migrar: el comando de backup falla"
+mkdir "$H/nueva"
+tar xzpf "$H/ssh-backup.tar.gz" -C "$H/nueva"
+[ -f "$H/nueva/.ssh/config.d/otra.conf" ] && [ -f "$H/nueva/.ssh/con espacio" ] || fail "migrar: backup incompleto"
+printf '0\n' | HOME="$H/nueva" NO_COLOR=1 ./ssh-manager >/dev/null 2>&1
+grep -q '^Include' "$H/nueva/.ssh/config" || fail "migrar: la PC nueva quedó sin Include"
+[ "$(stat -c %a "$H/nueva/.ssh" 2>/dev/null || stat -f %Lp "$H/nueva/.ssh")" = 700 ] || fail "migrar: permisos de ~/.ssh"
+[ "$(stat -c %a "$H/nueva/.ssh/con espacio" 2>/dev/null || stat -f %Lp "$H/nueva/.ssh/con espacio")" = 600 ] || fail "migrar: permisos de la clave"
 
 echo "OK"

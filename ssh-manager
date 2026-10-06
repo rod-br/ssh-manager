@@ -161,7 +161,9 @@ generar_clave() { # $1 = ruta de la clave privada
     ok "Clave creada: $1 (pública: $1.pub)"
 }
 
-pedir_clave() { # $1 = valor por defecto. Deja la ruta en KEY; falla si se cancela.
+# $1 = valor por defecto. Deja la ruta en KEY y, como va en la config, en
+# KEY_CONF; falla si se cancela.
+pedir_clave() {
     local keys def
     keys=$(claves)
     def=${1:-$(head -n1 <<<"$keys")}
@@ -185,6 +187,10 @@ pedir_clave() { # $1 = valor por defecto. Deja la ruta en KEY; falla si se cance
         error "La ruta no puede tener comillas."
         return 1
     fi
+    # Dentro del HOME se guarda como ~/...: así la conexión sigue sirviendo
+    # en otra PC aunque el usuario se llame distinto.
+    KEY_CONF=$KEY
+    [[ "$KEY" == "$HOME"/* ]] && KEY_CONF="~${KEY#"$HOME"}"
     [ -f "$KEY" ] && return
 
     aviso "No existe la clave: $KEY"
@@ -225,7 +231,7 @@ Host $name
     HostName $host
     User $usr
     Port $port
-    IdentityFile "$KEY"
+    IdentityFile "$KEY_CONF"
     IdentitiesOnly yes
 EOC
 
@@ -266,7 +272,7 @@ modificar() {
     set_opt "$FILE" HostName "$host" &&
         set_opt "$FILE" User "$usr" &&
         set_opt "$FILE" Port "$port" &&
-        set_opt "$FILE" IdentityFile "\"$KEY\"" || { error "No pude guardar los cambios."; return; }
+        set_opt "$FILE" IdentityFile "\"$KEY_CONF\"" || { error "No pude guardar los cambios."; return; }
 
     echo
     ok "Conexión '$NAME' modificada: $usr@$host:$port"
@@ -332,6 +338,45 @@ menu_claves() {
     fi
 }
 
+guia_migrar() {
+    local k args=""
+    while IFS= read -r k; do
+        [ -n "$k" ] && args+=$(printf ' %q %q' ".ssh/${k##*/}" ".ssh/${k##*/}.pub")
+    done < <(claves)
+    args=${args:- .ssh/id_ed25519 .ssh/id_ed25519.pub}
+
+    titulo "Migrar a otra PC"
+    cat <<EOG
+  Tus conexiones son archivos de texto en ~/.ssh/config.d: migrar es copiarlos.
+
+  ${B}1) En la PC vieja: empaquetar conexiones y claves${N}
+       ${C}tar czf ssh-backup.tar.gz -C ~ .ssh/config.d$args${N}
+
+  ${B}2) Pasar ssh-backup.tar.gz a la PC nueva${N}
+     Por pendrive o por scp dentro de tu red. Lleva tus claves privadas: no lo
+     mandes por mail ni chat, no lo subas a la nube y borralo al terminar.
+
+  ${B}3) En la PC nueva: instalar ssh-manager y restaurar${N}
+       ${C}git clone https://github.com/rod-br/ssh-manager.git${N}
+       ${C}./ssh-manager/install.sh${N}
+       ${C}tar xzpf ssh-backup.tar.gz -C ~${N}
+       ${C}ssh-manager${N}
+     Al abrirlo, ssh-manager agrega el Include a ~/.ssh/config y corrige los
+     permisos de las carpetas.
+
+  ${B}4) Probar${N}
+       ${C}ssh <alias>${N}
+     Si dice "UNPROTECTED PRIVATE KEY FILE":  ${C}chmod 600 ~/.ssh/<clave>${N}
+     Si no encuentra la clave (la ruta o el usuario cambiaron): corregila
+     con la opción 4 (Modificar).
+
+  ${B}¿Preferís no mover las claves privadas?${N} Es lo más seguro.
+     Empaquetá solo .ssh/config.d, generá un par nuevo en la PC nueva
+     (opción 7) y, desde la PC vieja, autorizá su .pub en cada servidor:
+       ${C}ssh-copy-id -f -i <clave-nueva>.pub <alias>${N}
+EOG
+}
+
 banner() {
     printf '%s' "$B$C"
     cat <<'EOB'
@@ -361,6 +406,7 @@ while true; do
     echo "  ${B}5)${N} Renombrar conexión"
     echo "  ${B}6)${N} Eliminar conexión"
     echo "  ${B}7)${N} Claves SSH (guía paso a paso / generar)"
+    echo "  ${B}8)${N} Migrar a otra PC (guía paso a paso)"
     echo "  ${B}0)${N} Salir"
     echo
 
@@ -374,6 +420,7 @@ while true; do
         5) renombrar ;;
         6) eliminar ;;
         7) menu_claves ;;
+        8) guia_migrar ;;
         0 | q | Q) exit 0 ;;
         *) error "Opción inválida." ;;
     esac

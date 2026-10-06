@@ -59,6 +59,7 @@ pasar a un script simple que te ahorra tiempo y errores.
   5) Renombrar conexión
   6) Eliminar conexión
   7) Claves SSH (guía paso a paso / generar)
+  8) Migrar a otra PC (guía paso a paso)
   0) Salir
 ```
 
@@ -70,6 +71,8 @@ pasar a un script simple que te ahorra tiempo y errores.
   (`ProxyJump`, `ForwardAgent`, etc.) se conservan.
 - **Guía de claves**: si detecta que no tenés un par de claves, te explica paso a
   paso cómo crearlo y puede generarlo por vos con `ssh-keygen`.
+- **Guía de migración**: los pasos para llevarte todo a otra PC, con el comando
+  de backup ya armado con tus claves.
 - **Valida lo que escribís** (nombre, host, puerto) antes de guardar, para que una
   entrada mal tipeada no rompa tu config de SSH.
 
@@ -155,7 +158,7 @@ Host prod
     HostName 203.0.113.10
     User deploy
     Port 22
-    IdentityFile "/home/vos/.ssh/id_ed25519"
+    IdentityFile "~/.ssh/id_ed25519"
     IdentitiesOnly yes
 ```
 
@@ -163,7 +166,42 @@ Host prod
   principio (y se deja una copia en `~/.ssh/config.bak` la primera vez).
 - Los archivos se crean con permisos `600` y las carpetas con `700`.
 - Las claves privadas nunca se copian ni se mueven: solo se guarda su ruta.
-- **Backup o migración a otra máquina:** copiá `~/.ssh/config.d/`.
+- La ruta de la clave se guarda como `~/...`, así la conexión sirve igual en otra
+  máquina aunque tu usuario se llame distinto.
+
+## Migrar a otra PC
+
+Como las conexiones son archivos de texto, migrar es copiarlos. La opción 8 del
+menú muestra estos pasos con el comando ya armado para tus claves.
+
+1. **En la PC vieja**, empaquetar conexiones y claves:
+   ```bash
+   tar czf ssh-backup.tar.gz -C ~ .ssh/config.d .ssh/id_ed25519 .ssh/id_ed25519.pub
+   ```
+2. **Pasar `ssh-backup.tar.gz` a la PC nueva** por pendrive o `scp` dentro de tu
+   red. Lleva tus claves privadas: no lo mandes por mail ni chat, no lo subas a
+   la nube y borralo al terminar.
+3. **En la PC nueva**, instalar ssh-manager y restaurar:
+   ```bash
+   git clone https://github.com/rod-br/ssh-manager.git
+   ./ssh-manager/install.sh
+   tar xzpf ssh-backup.tar.gz -C ~
+   ssh-manager
+   ```
+   Al abrirlo, ssh-manager agrega el `Include` a `~/.ssh/config` y corrige los
+   permisos de las carpetas.
+4. **Probar:** `ssh <alias>`.
+   - Si dice `UNPROTECTED PRIVATE KEY FILE`: `chmod 600 ~/.ssh/<clave>`.
+   - Si no encuentra la clave (la ruta o el usuario cambiaron): corregila con
+     la opción 4 (Modificar).
+
+**¿Preferís no mover las claves privadas?** Es lo más seguro. Empaquetá solo
+`.ssh/config.d`, generá un par nuevo en la PC nueva (opción 7) y, desde la PC
+vieja, autorizá su `.pub` en cada servidor:
+
+```bash
+ssh-copy-id -f -i <clave-nueva>.pub <alias>
+```
 
 ## Desinstalar
 
@@ -180,7 +218,7 @@ eliminá `~/.ssh/config.d/` y la línea `Include` de `~/.ssh/config`.
 ./test.sh
 ```
 
-Corre el flujo completo (registrar, renombrar, modificar, eliminar, validaciones)
+Corre el flujo completo (registrar, renombrar, modificar, eliminar, migrar, validaciones)
 contra un `HOME` temporal, sin tocar tu `~/.ssh` real.
 
 ## Licencia
