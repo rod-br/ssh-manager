@@ -59,7 +59,8 @@ pasar a un script simple que te ahorra tiempo y errores.
   5) Renombrar conexión
   6) Eliminar conexión
   7) Claves SSH (guía paso a paso / generar)
-  8) Migrar a otra PC (guía paso a paso)
+  8) Autorizar tu clave en un servidor (guía / copiar)
+  9) Migrar a otra PC (guía paso a paso)
   0) Salir
 ```
 
@@ -71,6 +72,8 @@ pasar a un script simple que te ahorra tiempo y errores.
   (`ProxyJump`, `ForwardAgent`, etc.) se conservan.
 - **Guía de claves**: si detecta que no tenés un par de claves, te explica paso a
   paso cómo crearlo y puede generarlo por vos con `ssh-keygen`.
+- **Autorizar tu clave en un servidor**: explica las formas de hacer que el
+  servidor reconozca tu clave pública y la copia por vos a la conexión que elijas.
 - **Guía de migración**: los pasos para llevarte todo a otra PC, con el comando
   de backup ya armado con tus claves.
 - **Valida lo que escribís** (nombre, host, puerto) antes de guardar, para que una
@@ -141,6 +144,44 @@ te guía. El resumen:
 
 Los pasos 1 y 3 los puede ejecutar el propio ssh-manager.
 
+## Que el servidor reconozca tu clave
+
+El servidor te deja entrar sin contraseña cuando tu clave **pública** está en su
+archivo `~/.ssh/authorized_keys` (una clave por línea). La opción 8 del menú
+explica esto mismo y copia la clave a la conexión que elijas.
+
+**A) Automática, con `ssh-copy-id`** (pide la contraseña del servidor una vez):
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub -p 22 usuario@servidor
+# o, con una conexión ya registrada:
+ssh-copy-id -i ~/.ssh/id_ed25519.pub <alias>
+```
+
+**B) Manual, si no tenés `ssh-copy-id`** (también pide la contraseña):
+
+```bash
+cat ~/.ssh/id_ed25519.pub | ssh usuario@servidor \
+  'mkdir -p ~/.ssh && chmod 700 ~/.ssh &&
+   cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+```
+
+**C) Sin la contraseña del servidor** (VPS nuevo o login por clave únicamente):
+mostrá tu clave pública con `cat ~/.ssh/id_ed25519.pub`, copiala entera (es una
+sola línea) y pegala en el panel de tu proveedor (sección "SSH keys"), o pasásela
+a quien administra el servidor para que la agregue a `authorized_keys`. La
+pública se puede compartir sin problema; la privada, nunca.
+
+**Comprobar:** `ssh <alias>` tiene que entrar sin pedir la contraseña del servidor.
+
+**Si sigue pidiendo contraseña**, casi siempre son permisos en el servidor:
+
+```bash
+chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && chmod go-w ~
+```
+
+Para ver qué clave se está ofreciendo: `ssh -v <alias>`.
+
 ## Cómo funciona
 
 ```
@@ -171,7 +212,7 @@ Host prod
 
 ## Migrar a otra PC
 
-Como las conexiones son archivos de texto, migrar es copiarlos. La opción 8 del
+Como las conexiones son archivos de texto, migrar es copiarlos. La opción 9 del
 menú muestra estos pasos con el comando ya armado para tus claves.
 
 1. **En la PC vieja**, empaquetar conexiones y claves:
@@ -218,7 +259,7 @@ eliminá `~/.ssh/config.d/` y la línea `Include` de `~/.ssh/config`.
 ./test.sh
 ```
 
-Corre el flujo completo (registrar, renombrar, modificar, eliminar, migrar, validaciones)
+Corre el flujo completo (registrar, renombrar, modificar, eliminar, autorizar, migrar, validaciones)
 contra un `HOME` temporal, sin tocar tu `~/.ssh` real.
 
 ## Licencia

@@ -142,12 +142,55 @@ guia_claves() {
 
   ${B}3) Copiar la pública al servidor${N} (pide su contraseña una sola vez)
        ${C}ssh-copy-id -i ~/.ssh/id_ed25519.pub usuario@servidor${N}
-     Sin ssh-copy-id: pegá el contenido del .pub en una línea nueva de
-     ~/.ssh/authorized_keys en el servidor.
+     Otras formas, y qué revisar si no funciona: opción 8.
 
   ${B}4) Probar${N}
        ${C}ssh <alias>${N}   ya no debería pedir la contraseña del servidor.
 EOG
+}
+
+guia_autorizar() {
+    cat <<EOG
+  El servidor te deja entrar sin contraseña cuando tu clave ${B}pública${N} está en
+  su archivo ~/.ssh/authorized_keys (una clave por línea). Formas de ponerla:
+
+  ${B}A) Automática, con ssh-copy-id${N} (pide la contraseña del servidor una vez)
+       ${C}ssh-copy-id -i ~/.ssh/id_ed25519.pub -p 22 usuario@servidor${N}
+     Con una conexión ya registrada alcanza con el alias:
+       ${C}ssh-copy-id -i ~/.ssh/id_ed25519.pub <alias>${N}
+
+  ${B}B) Manual, si no tenés ssh-copy-id${N} (también pide la contraseña)
+       ${C}cat ~/.ssh/id_ed25519.pub | ssh usuario@servidor \\
+         'mkdir -p ~/.ssh && chmod 700 ~/.ssh &&
+          cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'${N}
+
+  ${B}C) Sin la contraseña del servidor${N} (VPS nuevo o login por clave únicamente)
+     Mostrá tu clave pública y copiala entera; es una sola línea:
+       ${C}cat ~/.ssh/id_ed25519.pub${N}
+     Pegala en el panel de tu proveedor (sección "SSH keys") o pasásela a
+     quien administra el servidor para que la agregue a authorized_keys.
+     La pública se puede compartir sin problema; la privada, nunca.
+
+  ${B}Comprobar${N}
+       ${C}ssh <alias>${N}   tiene que entrar sin pedir la contraseña del servidor.
+
+  ${B}Si sigue pidiendo contraseña${N}, casi siempre son permisos en el servidor:
+       ${C}chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && chmod go-w ~${N}
+     Para ver qué clave se está ofreciendo:  ${C}ssh -v <alias>${N}
+EOG
+}
+
+copiar_clave() { # $1 = alias de la conexión, $2 = clave privada
+    if [ ! -f "$2.pub" ]; then
+        error "No encuentro la clave pública: $2.pub"
+        echo "  Se regenera con:  ssh-keygen -y -f \"$2\" > \"$2.pub\""
+        return 1
+    fi
+    if ! command -v ssh-copy-id >/dev/null; then
+        error "No encuentro ssh-copy-id: usá el método manual (B) de la opción 8."
+        return 1
+    fi
+    ssh-copy-id -i "$2.pub" "$1"
 }
 
 generar_clave() { # $1 = ruta de la clave privada
@@ -241,7 +284,7 @@ EOC
     echo
 
     if [ -f "$KEY.pub" ] && confirmar "¿Copiar la clave pública al servidor ahora? (pide su contraseña una vez)"; then
-        ssh-copy-id -i "$KEY.pub" -p "$port" "$usr@$host"
+        copiar_clave "$name" "$KEY"
     fi
 }
 
@@ -338,6 +381,19 @@ menu_claves() {
     fi
 }
 
+autorizar() {
+    local key
+    titulo "Autorizar tu clave en un servidor"
+    guia_autorizar
+    echo
+    [ -n "$(conexiones)" ] || return
+    confirmar "¿Copiar tu clave pública a una de tus conexiones ahora?" || return
+    elegir "autorizar" || return
+    key=$(get_opt "$FILE" IdentityFile)
+    echo
+    copiar_clave "$NAME" "${key/#\~/$HOME}"
+}
+
 guia_migrar() {
     local k args=""
     while IFS= read -r k; do
@@ -406,7 +462,8 @@ while true; do
     echo "  ${B}5)${N} Renombrar conexión"
     echo "  ${B}6)${N} Eliminar conexión"
     echo "  ${B}7)${N} Claves SSH (guía paso a paso / generar)"
-    echo "  ${B}8)${N} Migrar a otra PC (guía paso a paso)"
+    echo "  ${B}8)${N} Autorizar tu clave en un servidor (guía / copiar)"
+    echo "  ${B}9)${N} Migrar a otra PC (guía paso a paso)"
     echo "  ${B}0)${N} Salir"
     echo
 
@@ -420,7 +477,8 @@ while true; do
         5) renombrar ;;
         6) eliminar ;;
         7) menu_claves ;;
-        8) guia_migrar ;;
+        8) autorizar ;;
+        9) guia_migrar ;;
         0 | q | Q) exit 0 ;;
         *) error "Opción inválida." ;;
     esac

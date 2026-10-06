@@ -20,6 +20,8 @@ run 7 n ""
 grep -q "No tenés claves SSH" "$H/out" || fail "falta el aviso de claves en el menú"
 grep -q "ssh-keygen -t ed25519" "$H/out" || fail "falta la guía de claves"
 grep -q "ssh-copy-id" "$H/out" || fail "la guía no explica cómo copiar la pública"
+run 8 ""
+grep -q "authorized_keys" "$H/out" || fail "falta la guía para autorizar la clave en el servidor"
 
 [ "$(grep -n Include "$H/.ssh/config" | cut -d: -f1)" -lt "$(grep -n '^Host' "$H/.ssh/config" | cut -d: -f1)" ] ||
     fail "el Include quedó después del primer Host"
@@ -59,7 +61,7 @@ run 6 prod s ""
 [ ! -e "$D/prod.conf" ] || fail "eliminar"
 
 # Migrar: el comando de backup que muestra la guía funciona y la restauración también.
-run 8 ""
+run 9 ""
 (cd "$H" && HOME="$H" eval "$(grep -m1 'tar czf' "$H/out")") || fail "migrar: el comando de backup falla"
 mkdir "$H/nueva"
 tar xzpf "$H/ssh-backup.tar.gz" -C "$H/nueva"
@@ -68,5 +70,10 @@ printf '0\n' | HOME="$H/nueva" NO_COLOR=1 ./ssh-manager >/dev/null 2>&1
 grep -q '^Include' "$H/nueva/.ssh/config" || fail "migrar: la PC nueva quedó sin Include"
 [ "$(stat -c %a "$H/nueva/.ssh" 2>/dev/null || stat -f %Lp "$H/nueva/.ssh")" = 700 ] || fail "migrar: permisos de ~/.ssh"
 [ "$(stat -c %a "$H/nueva/.ssh/con espacio" 2>/dev/null || stat -f %Lp "$H/nueva/.ssh/con espacio")" = 600 ] || fail "migrar: permisos de la clave"
+
+# Autorizar: sin el .pub avisa en vez de intentar copiar.
+rm "$H/.ssh/con espacio.pub"
+run 8 s otra ""
+grep -qF "No encuentro la clave pública: $H/.ssh/con espacio.pub" "$H/out" || fail "autorizar: no detectó el .pub faltante"
 
 echo "OK"
