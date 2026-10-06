@@ -1,213 +1,383 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# ssh-manager: administra conexiones SSH como archivos en ~/.ssh/config.d/
+# Solo bash + OpenSSH. Después de registrar una conexión: ssh <alias>
 
-CONFIG_DIR="$HOME/.ssh/config.d"
-CONFIG_FILE="$HOME/.ssh/config"
+umask 077
 
-mkdir -p "$CONFIG_DIR"
-chmod 700 "$HOME/.ssh" "$CONFIG_DIR"
+SSH_DIR="$HOME/.ssh"
+CONFIG_DIR="$SSH_DIR/config.d"
+CONFIG_FILE="$SSH_DIR/config"
+DEFAULT_KEY="$SSH_DIR/id_ed25519"
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    touch "$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE"
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    B=$'\e[1m' D=$'\e[2m' R=$'\e[31m' G=$'\e[32m' Y=$'\e[33m' C=$'\e[36m' N=$'\e[0m'
+else
+    B='' D='' R='' G='' Y='' C='' N=''
 fi
 
-if ! grep -qF 'Include ~/.ssh/config.d/*.conf' "$CONFIG_FILE"; then
+titulo() { printf '\n%s== %s ==%s\n\n' "$B$C" "$1" "$N"; }
+ok()     { printf '%s✔ %s%s\n' "$G" "$1" "$N"; }
+aviso()  { printf '%s! %s%s\n' "$Y" "$1" "$N"; }
+error()  { printf '%s✘ %s%s\n' "$R" "$1" "$N"; }
+
+# Lee una línea en la variable $2. Con Ctrl-D sale en vez de quedar en loop.
+ask() { read -rep "$1" "$2" || { echo; exit 0; }; }
+
+confirmar() { # $1 = pregunta, $2 = respuesta por defecto (s/n)
+    local r
+    if [ "${2:-n}" = s ]; then
+        ask "$1 [S/n]: " r
+        [[ ! "$r" =~ ^[nN] ]]
+    else
+        ask "$1 [s/N]: " r
+        [[ "$r" =~ ^[sSyY] ]]
+    fi
+}
+
+# Todo lo que se escribe en la config pasa por acá: un valor con espacios o
+# comillas rompería el archivo, y el nombre además es una ruta de archivo.
+valid_name() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; }
+valid_host() { [[ "$1" =~ ^[a-zA-Z0-9:][a-zA-Z0-9.:_-]*$ ]]; }
+valid_user() { local re='^[^[:space:]"#-][^[:space:]"#]*$'; [[ "$1" =~ $re ]]; }
+valid_port() { [[ "$1" =~ ^[0-9]{1,5}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
+
+preparar() {
+    local tmp
+
+    mkdir -p "$CONFIG_DIR"
+    chmod 700 "$SSH_DIR" "$CONFIG_DIR"
+    [ -f "$CONFIG_FILE" ] || touch "$CONFIG_FILE"
+
+    # El Include tiene que estar antes del primer Host/Match: si queda dentro
+    # de un bloque, ssh solo lo aplica a ese host y las conexiones no aparecen.
+    awk '
+        tolower($1) == "host" || tolower($1) == "match" { exit }
+        tolower($1) == "include" && index($0, "config.d/*.conf") { ok = 1; exit }
+        END { exit !ok }
+    ' "$CONFIG_FILE" && return
+
+    [ -s "$CONFIG_FILE" ] && cp -p "$CONFIG_FILE" "$CONFIG_FILE.bak"
+    tmp=$(mktemp "$CONFIG_DIR/.tmp.XXXXXX") || exit 1
     {
-        echo ""
         echo "# Conexiones administradas por ssh-manager"
         echo "Include ~/.ssh/config.d/*.conf"
-    } >> "$CONFIG_FILE"
-fi
-
-registrar() {
-    echo
-    echo "=== Registrar conexión SSH ==="
-    echo
-
-    read -rp "Nombre/alias: " NAME
-
-    if [ -z "$NAME" ]; then
-        echo "Error: el nombre no puede estar vacío."
-        return
-    fi
-
-    if [[ ! "$NAME" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-        echo "Error: usá solamente letras, números, punto, guión o guión bajo."
-        return
-    fi
-
-    FILE="$CONFIG_DIR/$NAME.conf"
-
-    if [ -f "$FILE" ]; then
-        echo "Ya existe una conexión llamada '$NAME'."
-        return
-    fi
-
-    read -rp "Usuario: " USER
-    read -rp "IP / dominio: " HOST
-    read -rp "Puerto [22]: " PORT
-
-    PORT=${PORT:-22}
-
-    echo
-    echo "Clave privada SSH"
-    echo "Dejá vacío para usar ~/.ssh/id_ed25519"
-    read -rp "Ruta: " KEY
-
-    KEY=${KEY:-$HOME/.ssh/id_ed25519}
-    KEY="${KEY/#\~/$HOME}"
-
-    if [ ! -f "$KEY" ]; then
         echo
-        echo "Advertencia: no existe la clave:"
-        echo "$KEY"
-        read -rp "¿Crear igualmente la conexión? [s/N]: " CONT
-        [[ ! "$CONT" =~ ^[sS]$ ]] && return
-    fi
+        grep -vE '^[[:space:]]*(Include[[:space:]].*config\.d/\*\.conf|# Conexiones administradas por ssh-manager)[[:space:]]*$' "$CONFIG_FILE"
+    } > "$tmp"
+    cat "$tmp" > "$CONFIG_FILE" # cat y no mv: respeta un config que sea symlink
+    rm -f "$tmp"
+}
 
-    cat > "$FILE" <<EOC
-Host $NAME
-    HostName $HOST
-    User $USER
-    Port $PORT
-    IdentityFile $KEY
-    IdentitiesOnly yes
-EOC
+get_opt() { # $1 = archivo, $2 = clave → valor sin comillas
+    awk -v k="$2" 'tolower($1) == tolower(k) {
+        sub(/^[ \t]*[^ \t]+[ \t]+/, ""); gsub(/^"|"[ \t]*$/, ""); print; exit
+    }' "$1"
+}
 
-    chmod 600 "$FILE"
+set_opt() { # $1 = archivo, $2 = clave, $3 = valor. Conserva el resto del archivo.
+    local tmp
+    tmp=$(mktemp "$CONFIG_DIR/.tmp.XXXXXX") || return
+    K="$2" V="$3" awk '
+        !done && tolower($1) == tolower(ENVIRON["K"]) { print "    " ENVIRON["K"] " " ENVIRON["V"]; done = 1; next }
+        { print }
+        END { if (!done) print "    " ENVIRON["K"] " " ENVIRON["V"] }
+    ' "$1" > "$tmp" && mv "$tmp" "$1"
+}
 
-    echo
-    echo "================================"
-    echo "Script creado correctamente!"
-    echo
-    echo "Conexión: $NAME"
-    echo "Destino:  $USER@$HOST:$PORT"
-    echo "Clave:    $KEY"
-    echo
-    echo "Para conectarte:"
-    echo "  ssh $NAME"
-    echo "================================"
+conexiones() { # nombres, uno por línea
+    local f
+    for f in "$CONFIG_DIR"/*.conf; do
+        [ -e "$f" ] && basename "$f" .conf
+    done
+}
+
+claves() { # claves privadas que tienen su .pub al lado
+    local pub
+    for pub in "$SSH_DIR"/*.pub; do
+        [ -f "${pub%.pub}" ] && echo "${pub%.pub}"
+    done
 }
 
 listar() {
-    echo
-    echo "=== Conexiones SSH ==="
-    echo
-
-    found=0
-
-    for FILE in "$CONFIG_DIR"/*.conf; do
-        [ -e "$FILE" ] || continue
-
-        NAME=$(basename "$FILE" .conf)
-        HOST=$(grep -E '^[[:space:]]*HostName ' "$FILE" | awk '{print $2}')
-        USER=$(grep -E '^[[:space:]]*User ' "$FILE" | awk '{print $2}')
-        PORT=$(grep -E '^[[:space:]]*Port ' "$FILE" | awk '{print $2}')
-
-        printf "  %-20s %s@%s:%s\n" "$NAME" "$USER" "$HOST" "$PORT"
-        found=1
-    done
-
-    if [ "$found" -eq 0 ]; then
-        echo "No hay conexiones registradas."
-    fi
-
-    echo
+    local i=0 n f
+    titulo "Conexiones SSH"
+    while IFS= read -r n; do
+        f="$CONFIG_DIR/$n.conf"
+        i=$((i + 1))
+        printf '  %s%2d)%s %s%-20s%s %s@%s:%s\n' "$D" "$i" "$N" "$B" "$n" "$N" \
+            "$(get_opt "$f" User)" "$(get_opt "$f" HostName)" "$(get_opt "$f" Port)"
+    done < <(conexiones)
+    [ "$i" -gt 0 ] || echo "  No hay conexiones registradas."
 }
 
-modificar() {
-    echo
+elegir() { # $1 = verbo para el prompt. Deja la elección en NAME y FILE.
+    local sel
     listar
+    [ -n "$(conexiones)" ] || return 1
+    echo
+    ask "Número o nombre de la conexión a $1: " sel
+    if [[ "$sel" =~ ^[0-9]+$ ]] && [ ! -f "$CONFIG_DIR/$sel.conf" ]; then
+        sel=$(conexiones | sed -n "${sel}p" 2>/dev/null)
+    fi
+    if ! valid_name "$sel" || [ ! -f "$CONFIG_DIR/$sel.conf" ]; then
+        error "No existe esa conexión."
+        return 1
+    fi
+    NAME=$sel
+    FILE="$CONFIG_DIR/$sel.conf"
+}
 
-    read -rp "Nombre de la conexión a modificar: " NAME
-    FILE="$CONFIG_DIR/$NAME.conf"
+guia_claves() {
+    cat <<EOG
+  SSH entra sin contraseña usando un ${B}par de claves${N}. Paso a paso:
 
-    if [ ! -f "$FILE" ]; then
-        echo "No existe '$NAME'."
+  ${B}1) Generar el par${N} (privada + pública)
+       ${C}ssh-keygen -t ed25519${N}
+     Enter acepta la ruta por defecto (~/.ssh/id_ed25519).
+     La passphrase es opcional, pero protege la clave si te roban el equipo.
+
+  ${B}2) Quedan dos archivos${N}
+       ~/.ssh/id_ed25519      privada: no sale nunca de tu máquina
+       ~/.ssh/id_ed25519.pub  pública: es la que se copia al servidor
+
+  ${B}3) Copiar la pública al servidor${N} (pide su contraseña una sola vez)
+       ${C}ssh-copy-id -i ~/.ssh/id_ed25519.pub usuario@servidor${N}
+     Sin ssh-copy-id: pegá el contenido del .pub en una línea nueva de
+     ~/.ssh/authorized_keys en el servidor.
+
+  ${B}4) Probar${N}
+       ${C}ssh <alias>${N}   ya no debería pedir la contraseña del servidor.
+EOG
+}
+
+generar_clave() { # $1 = ruta de la clave privada
+    if ! command -v ssh-keygen >/dev/null; then
+        error "No encuentro ssh-keygen. Instalá OpenSSH (paquete openssh-client)."
+        return 1
+    fi
+    echo
+    ssh-keygen -t ed25519 -f "$1" || return 1
+    echo
+    ok "Clave creada: $1 (pública: $1.pub)"
+}
+
+pedir_clave() { # $1 = valor por defecto. Deja la ruta en KEY; falla si se cancela.
+    local keys def
+    keys=$(claves)
+    def=${1:-$(head -n1 <<<"$keys")}
+    def=${def:-$DEFAULT_KEY}
+
+    echo
+    if [ -n "$keys" ]; then
+        echo "Claves disponibles:"
+        sed 's/^/  /' <<<"$keys"
+    else
+        aviso "No encontré ningún par de claves en ~/.ssh."
+        echo
+        guia_claves
+    fi
+    echo
+
+    ask "Clave privada [$def]: " KEY
+    KEY=${KEY:-$def}
+    KEY="${KEY/#\~/$HOME}"
+    if [[ "$KEY" == *\"* ]]; then
+        error "La ruta no puede tener comillas."
+        return 1
+    fi
+    [ -f "$KEY" ] && return
+
+    aviso "No existe la clave: $KEY"
+    if confirmar "¿Generarla ahora con ssh-keygen?" s; then
+        generar_clave "$KEY"
+        return
+    fi
+    confirmar "¿Guardar la conexión igualmente?"
+}
+
+registrar() {
+    local name usr host port file
+    titulo "Registrar conexión"
+
+    ask "Nombre/alias: " name
+    if ! valid_name "$name"; then
+        error "Nombre inválido: usá letras, números, punto, guión o guión bajo."
+        return
+    fi
+    file="$CONFIG_DIR/$name.conf"
+    if [ -e "$file" ]; then
+        error "Ya existe una conexión llamada '$name'."
         return
     fi
 
-    OLD_USER=$(grep -E '^[[:space:]]*User ' "$FILE" | awk '{print $2}')
-    OLD_HOST=$(grep -E '^[[:space:]]*HostName ' "$FILE" | awk '{print $2}')
-    OLD_PORT=$(grep -E '^[[:space:]]*Port ' "$FILE" | awk '{print $2}')
-    OLD_KEY=$(grep -E '^[[:space:]]*IdentityFile ' "$FILE" | awk '{print $2}')
+    ask "Usuario: " usr
+    valid_user "$usr" || { error "Usuario inválido."; return; }
+    ask "IP / dominio: " host
+    valid_host "$host" || { error "IP o dominio inválido."; return; }
+    ask "Puerto [22]: " port
+    port=${port:-22}
+    valid_port "$port" || { error "Puerto inválido (1-65535)."; return; }
 
-    echo
-    echo "Enter = mantener valor actual"
-    echo
+    pedir_clave || { echo "Cancelado."; return; }
 
-    read -rp "Usuario [$OLD_USER]: " USER
-    read -rp "IP / dominio [$OLD_HOST]: " HOST
-    read -rp "Puerto [$OLD_PORT]: " PORT
-    read -rp "Clave privada [$OLD_KEY]: " KEY
-
-    USER=${USER:-$OLD_USER}
-    HOST=${HOST:-$OLD_HOST}
-    PORT=${PORT:-$OLD_PORT}
-    KEY=${KEY:-$OLD_KEY}
-
-    cat > "$FILE" <<EOC
-Host $NAME
-    HostName $HOST
-    User $USER
-    Port $PORT
-    IdentityFile $KEY
+    cat > "$file" <<EOC
+Host $name
+    HostName $host
+    User $usr
+    Port $port
+    IdentityFile "$KEY"
     IdentitiesOnly yes
 EOC
 
-    chmod 600 "$FILE"
-
     echo
-    echo "Conexión '$NAME' modificada correctamente."
+    ok "Conexión '$name' creada: $usr@$host:$port"
+    echo "  Para conectarte:  ${B}ssh $name${N}"
+    echo
+
+    if [ -f "$KEY.pub" ] && confirmar "¿Copiar la clave pública al servidor ahora? (pide su contraseña una vez)"; then
+        ssh-copy-id -i "$KEY.pub" -p "$port" "$usr@$host"
+    fi
 }
 
-eliminar() {
+modificar() {
+    local usr host port o_usr o_host o_port
+    elegir "modificar" || return
+
+    o_usr=$(get_opt "$FILE" User)
+    o_host=$(get_opt "$FILE" HostName)
+    o_port=$(get_opt "$FILE" Port)
+
     echo
-    listar
+    echo "Enter = mantener el valor actual"
+    echo
 
-    read -rp "Nombre de la conexión a eliminar: " NAME
-    FILE="$CONFIG_DIR/$NAME.conf"
+    ask "Usuario [$o_usr]: " usr
+    usr=${usr:-$o_usr}
+    valid_user "$usr" || { error "Usuario inválido."; return; }
+    ask "IP / dominio [$o_host]: " host
+    host=${host:-$o_host}
+    valid_host "$host" || { error "IP o dominio inválido."; return; }
+    ask "Puerto [${o_port:-22}]: " port
+    port=${port:-${o_port:-22}}
+    valid_port "$port" || { error "Puerto inválido (1-65535)."; return; }
 
-    if [ ! -f "$FILE" ]; then
-        echo "No existe '$NAME'."
+    pedir_clave "$(get_opt "$FILE" IdentityFile)" || { echo "Cancelado."; return; }
+
+    set_opt "$FILE" HostName "$host" &&
+        set_opt "$FILE" User "$usr" &&
+        set_opt "$FILE" Port "$port" &&
+        set_opt "$FILE" IdentityFile "\"$KEY\"" || { error "No pude guardar los cambios."; return; }
+
+    echo
+    ok "Conexión '$NAME' modificada: $usr@$host:$port"
+}
+
+renombrar() {
+    local new
+    elegir "renombrar" || return
+
+    ask "Nuevo nombre para '$NAME': " new
+    if ! valid_name "$new"; then
+        error "Nombre inválido: usá letras, números, punto, guión o guión bajo."
+        return
+    fi
+    if [ -e "$CONFIG_DIR/$new.conf" ]; then
+        error "Ya existe una conexión llamada '$new'."
         return
     fi
 
-    read -rp "¿Eliminar '$NAME'? [s/N]: " CONFIRM
+    awk -v n="$new" '!done && tolower($1) == "host" { print "Host " n; done = 1; next } { print }' \
+        "$FILE" > "$CONFIG_DIR/$new.conf" || { rm -f "$CONFIG_DIR/$new.conf"; error "No pude renombrar."; return; }
+    rm -f "$FILE"
 
-    if [[ "$CONFIRM" =~ ^[sS]$ ]]; then
+    echo
+    ok "'$NAME' ahora se llama '$new'."
+    echo "  Para conectarte:  ${B}ssh $new${N}"
+}
+
+eliminar() {
+    elegir "eliminar" || return
+
+    if confirmar "¿Eliminar '$NAME'?"; then
         rm -f "$FILE"
-        echo "Conexión '$NAME' eliminada."
+        ok "Conexión '$NAME' eliminada."
     else
         echo "Cancelado."
     fi
 }
 
+conectar() {
+    elegir "conectar" || return
+    echo
+    ssh "$NAME"
+}
+
+menu_claves() {
+    local keys
+    titulo "Claves SSH"
+    keys=$(claves)
+
+    if [ -n "$keys" ]; then
+        echo "Claves encontradas:"
+        sed 's/^/  /' <<<"$keys"
+    else
+        aviso "No encontré ningún par de claves en ~/.ssh."
+    fi
+    echo
+    guia_claves
+    echo
+
+    if [ -z "$keys" ] && [ ! -e "$DEFAULT_KEY" ] && confirmar "¿Generar ahora ~/.ssh/id_ed25519?" s; then
+        generar_clave "$DEFAULT_KEY"
+    fi
+}
+
+banner() {
+    printf '%s' "$B$C"
+    cat <<'EOB'
+         _
+ ___ ___| |__        _ __ ___   __ _ _ __   __ _  __ _  ___ _ __
+/ __/ __| '_ \ _____| '_ ` _ \ / _` | '_ \ / _` |/ _` |/ _ \ '__|
+\__ \__ \ | | |_____| | | | | | (_| | | | | (_| | (_| |  __/ |
+|___/___/_| |_|     |_| |_| |_|\__,_|_| |_|\__,_|\__, |\___|_|
+                                                 |___/
+EOB
+    printf '%s' "$N"
+}
+
+preparar
+
 while true; do
-    clear
-
-    echo "================================"
-    echo "       SSH CONNECTION MANAGER"
-    echo "================================"
+    clear 2>/dev/null
+    banner
+    echo "${D}  Tus conexiones SSH en ~/.ssh/config.d · después: ssh <alias>${N}"
     echo
-    echo "1) Registrar conexión"
-    echo "2) Ver conexiones"
-    echo "3) Modificar conexión"
-    echo "4) Eliminar conexión"
-    echo "5) Salir"
+    [ -n "$(claves)" ] || { aviso "No tenés claves SSH todavía: la opción 7 te guía paso a paso."; echo; }
+
+    echo "  ${B}1)${N} Conectar"
+    echo "  ${B}2)${N} Registrar conexión"
+    echo "  ${B}3)${N} Ver conexiones"
+    echo "  ${B}4)${N} Modificar conexión"
+    echo "  ${B}5)${N} Renombrar conexión"
+    echo "  ${B}6)${N} Eliminar conexión"
+    echo "  ${B}7)${N} Claves SSH (guía paso a paso / generar)"
+    echo "  ${B}0)${N} Salir"
     echo
 
-    read -rp "Opción: " OPTION
+    ask "Opción: " OPTION
 
     case "$OPTION" in
-        1) registrar ;;
-        2) listar ;;
-        3) modificar ;;
-        4) eliminar ;;
-        5) exit 0 ;;
-        *) echo "Opción inválida." ;;
+        1) conectar ;;
+        2) registrar ;;
+        3) listar ;;
+        4) modificar ;;
+        5) renombrar ;;
+        6) eliminar ;;
+        7) menu_claves ;;
+        0 | q | Q) exit 0 ;;
+        *) error "Opción inválida." ;;
     esac
 
     echo
-    read -rp "Presioná Enter para continuar..."
+    ask "Presioná Enter para continuar..." _
 done
